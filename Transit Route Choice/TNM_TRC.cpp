@@ -429,13 +429,36 @@ void TNM_TRC::UpdateGreedy(bool rankwithlttonly)
         gsl_integration_workspace_free (w);
     }
     //double curTT = 1e20;
-    multimap<double, LineProps*, less<double> >::iterator pv= plines.begin();       
-    do 
+    if(DefaultDist == LineProps::Expon && IsSameDist()) //special case for 
     {
-        AttractiveSet.push_back(pv->second->id);
-        MinExpTotalTT = GetExpectedTotalTravelTime();
-        pv++;
-    }while(pv!=plines.end() && pv->second->expRTT < MinExpTotalTT); //if line travel time > expectation total tt, then add this line will gurantee increase the travel time. 
+        multimap<double, LineProps*, less<double> >::iterator pv= plines.begin();       
+        do 
+        {
+            AttractiveSet.push_back(pv->second->id);
+            MinExpTotalTT = GetExpectedTotalTravelTime();
+            pv++;
+        }while(pv!=plines.end() && pv->second->expRTT < MinExpTotalTT); //if line travel time > expectation total tt, then add this line will gurantee increase the travel time. 
+    }
+    else
+    {
+        double preMinETT;
+        MinExpTotalTT= 1e20;
+        multimap<double, LineProps*, less<double> >::iterator pv= plines.begin();
+        do
+        {
+            preMinETT = MinExpTotalTT;
+          //  cout<<"current total TT "<<preMinETT<<endl;
+            AttractiveSet.push_back(pv->second->id);
+            MinExpTotalTT = GetExpectedTotalTravelTime();
+            pv++;
+        }while(preMinETT > MinExpTotalTT && pv!=plines.end());
+       // cout<<"\tafter loop, expeted total = "<<MinExpTotalTT <<endl;
+        if(preMinETT < MinExpTotalTT)
+        {
+            AttractiveSet.pop_back();
+            MinExpTotalTT = GetExpectedTotalTravelTime();//take the last one.
+        }
+    }
     NeedUpdate = false;
 }
 
@@ -452,6 +475,7 @@ void TNM_TRC::CheckAllSubSet(int *arr, int size, int left, int index, std::vecto
         else
         {
             AttractiveSet = pa; ///otherwise reset Attractive set;
+            MinExpTotalTT = GetExpectedTotalTravelTime();
         }
         return;
     }

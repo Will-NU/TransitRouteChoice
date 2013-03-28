@@ -63,6 +63,7 @@ int main(int argc, char **argv)
     Obj.AddLine(p, 50, 0, 38);
     Obj.AddLine(p, 5,  0, 40);
     RunTRC(&Obj);
+	getchar();
 	return 0;
 }
 

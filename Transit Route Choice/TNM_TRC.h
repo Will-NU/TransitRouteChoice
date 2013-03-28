@@ -25,7 +25,8 @@ struct TRCCallbackHolder
 
 
 //Base class for LineProps
-class  LineProps
+//class TNMDER_API LineProps
+class LineProps
 {
 public:
     LineProps()
@@ -116,7 +117,8 @@ public:
 
 
 //Base class TNM_TRC
-class   TNM_TRC
+//class  TNMDER_API TNM_TRC
+class TNM_TRC
 {
 protected:
 	bool Info;                           // True/Flase: with/without online information at stops
