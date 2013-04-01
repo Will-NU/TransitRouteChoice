@@ -5,9 +5,9 @@ using namespace std;
 
 void LineProps::Print()
 {
-    cout<<setw(12)<<GetTypeStr()
+    cout<<setw(14)<<GetTypeStr()
         <<setw(12)<<this->headwayMean<<setw(12)<<this->headwayVar
-        <<setw(12)<<this->expRTT<<setw(12)<<this->prob<<" ";
+		<<setw(12)<<this->expRTT<<setw(6)<<((this->info)?"Yes":"No")<<setw(12)<<this->prob<<" ";
     for(int i = 0;i<par.size();i++)
         cout<<par[i]<<",";
     cout<<endl;
@@ -67,7 +67,7 @@ bool LineProps::UpdateProb(TNM_TRC *trc, gsl_integration_workspace *w, int size)
 	holder.params = &id;
     F.params = &holder;    
     double error;
-    gsl_integration_qagiu(&F, 0, 0, 1e-6, size, w, &prob, &error);
+    gsl_integration_qagiu(&F, 0, 0, 1e-4, size, w, &prob, &error);
     if(neww)
     {
         gsl_integration_workspace_free (w);
@@ -77,13 +77,18 @@ bool LineProps::UpdateProb(TNM_TRC *trc, gsl_integration_workspace *w, int size)
 }
 double LinePropsExp::WaitingTimePDF(double x)
 {
-    return par[0] * exp(- par[0] * x);
+	if (x >= 0)
+		return par[0] * exp(- par[0] * x);
+	else
+		return 0.0;
 }
 double LinePropsExp::WaitingTimeCDF(double x)
 {
-    return 1 - exp(- par[0] * x);
+	if (x >= 0)
+		return 1 - exp(- par[0] * x);
+	else
+		return 0.0;
 }
-
 
 double LinePropsDert::WaitingTimePDF(double x)
 {
@@ -94,7 +99,8 @@ double LinePropsDert::WaitingTimePDF(double x)
 double LinePropsDert::WaitingTimeCDF(double x)
 {
     if (x >= 0 && x <= headwayMean) return par[0] *x;
-    else return 1.0;
+    else if (x < 0) return 0.0;
+	else return 1.0;
 }
 
 bool LinePropsDert::UpdateProb(TNM_TRC *trc, gsl_integration_workspace *w, int size)
@@ -121,7 +127,7 @@ bool LinePropsDert::UpdateProb(TNM_TRC *trc, gsl_integration_workspace *w, int s
 	holder.params = &id;
     F.params = &holder;    
     double error;
-    gsl_integration_qag(&F, 0, headwayMean, 0, 1e-6, size, 6, w, &prob, &error);
+    gsl_integration_qag(&F, 0, headwayMean, 0, 1e-4, size, 6, w, &prob, &error);
     if(neww)
     {
         gsl_integration_workspace_free (w);
@@ -137,28 +143,37 @@ void LinePropsErlang::InitializePar()
 }
 double LinePropsErlang::WaitingTimePDF(double x)
 {
-    double f = 0.0;
-	double lambda = par[0];
-	double k      = par[1];
-	for (int i = 0; i < k; i++)
+	if (x < 0)
+		return 0.0;
+	else
 	{
-		f += pow(k * lambda * x, i) / factorial(i);
+		double f = 0.0;
+		double lambda = par[0];
+		double k      = par[1];
+		for (int i = 0; i < k; i++)
+		{
+			f += pow(k * lambda * x, i) / factorial(i);
+		}
+		return  f*lambda * exp(- k * lambda * x); 
 	}
-	return  f*lambda * exp(- k * lambda * x); 
-    
 }
 double LinePropsErlang::WaitingTimeCDF(double x)
 {
-    double f = 0.0;
-    double lambda = par[0];
-	double k      = par[1];
-	for (int i = 0; i < k; i++)
+	if (x < 0)
+		return 0.0;
+	else
 	{
-		f += (1.0 - i / k) * pow(k * lambda * x, i) / factorial(i);
+		double f = 0.0;
+		double lambda = par[0];
+		double k      = par[1];
+		for (int i = 0; i < k; i++)
+		{
+			f += (1.0 - i / k) * pow(k * lambda * x, i) / factorial(i);
+		}
+		f *= exp(- k * lambda * x);
+		f = 1 - f;
+		return f;
 	}
-	f *= exp(- k * lambda * x);
-	f = 1 - f;
-    return f;
 }
 
 TNM_TRC::TNM_TRC()
@@ -166,6 +181,7 @@ TNM_TRC::TNM_TRC()
     SameDist = true;
     NeedUpdate = true;
     DefaultDist = LineProps::Unknown;
+	InfoCase = Unknown;
 }
 
 TNM_TRC::~TNM_TRC(void)
@@ -181,14 +197,33 @@ void TNM_TRC::CleanLines()
     }
     Lines.clear();
     AttractiveSet.clear();
+	LinesWithInfo.clear();
+	LinesWithoutInfo.clear();
 }
 
-void TNM_TRC::AddLine(void *pointer, double mean, double var, double exRtt, LineProps::Distribution dist)
+void TNM_TRC::AddLine(void *pointer, double mean, double var, double exRtt, bool info, LineProps::Distribution dist)
 {
     LineProps::Distribution pdist;
     if(dist != LineProps::Unknown) pdist = dist;
     else                pdist = DefaultDist;
     if(pdist != DefaultDist) SameDist = false;
+
+	// Determine what the new case will be in terms of information availability after adding one more line
+	switch(InfoCase)
+	{
+	case Unknown:
+		InfoCase = (info)?CompInfo:NoInfo;
+		break;
+	case NoInfo:
+		InfoCase = (info)?PartialInfo:NoInfo;
+		break;
+	case CompInfo:
+		InfoCase = (info)?CompInfo:PartialInfo;
+		break;
+	case PartialInfo: 
+		break;
+	}
+		
     LineProps *lp;
     switch(pdist)
     {
@@ -206,13 +241,19 @@ void TNM_TRC::AddLine(void *pointer, double mean, double var, double exRtt, Line
     lp->headwayMean = mean;
     lp->headwayVar  = var;
     lp->expRTT = exRtt;
+	lp->info = info;
     lp->prob   = 0.0;
     lp->id     = Lines.size();
     lp->InitializePar(); //call this function untill all parameters are set. 
     NeedUpdate = true;
     Lines.push_back(lp);
+	if (info)
+		LinesWithInfo.push_back(lp->id);
+	else
+		LinesWithoutInfo.push_back(lp->id);
 }
-bool TNM_TRC::Initialize(LineProps::Distribution dist, bool info) 
+
+bool TNM_TRC::Initialize(LineProps::Distribution dist)
 {
     if(dist == LineProps::Unknown) 
     {
@@ -220,8 +261,9 @@ bool TNM_TRC::Initialize(LineProps::Distribution dist, bool info)
         return false;
     }
     else   DefaultDist = dist;
-    Info = info;
+    //Info = info;
     CleanLines();
+	InfoCase = Unknown;
     SameDist      = true;
     NeedUpdate    = true;
     ExpWaitTime   = -1;
@@ -232,13 +274,92 @@ bool TNM_TRC::Initialize(LineProps::Distribution dist, bool info)
 double TNM_TRC::ConditionalWaitingTimePDF(double x, void *params)
 {
 	int lineIndex = *(int *) params;
-	double f = 1;    
-    for (vector<int>::iterator pv = AttractiveSet.begin(); pv!=AttractiveSet.end();pv++) 
+	double f = 1;
+	if (InfoCase == NoInfo)
 	{
-        if (*pv != lineIndex)
-            f *= (1 - Lines[*pv]->WaitingTimeCDF(x));
+		for (vector<int>::iterator pv = AttractiveSet.begin(); pv!=AttractiveSet.end();pv++) 
+		{
+			if (*pv != lineIndex)
+				f *= (1 - Lines[*pv]->WaitingTimeCDF(x));
+			else
+				f *= Lines[*pv]->WaitingTimePDF(x);
+		}
+	}
+	else if (InfoCase == PartialInfo)
+	{
+		double s = Lines[lineIndex]->expRTT;
+		if (Lines[lineIndex]->info)
+		{
+			for (vector<int>::iterator pv = LinesWithInfo.begin(); pv != LinesWithInfo.end(); pv++)
+			{
+				if (*pv != lineIndex)
+					f *= (1 - Lines[*pv]->WaitingTimeCDF(x + s - Lines[*pv]->expRTT));
+				else
+					f *= Lines[*pv]->WaitingTimePDF(x);
+			}
+			for (vector<int>::iterator pv = LinesWithoutInfo.begin(); pv != LinesWithoutInfo.end(); pv++)
+				f *= (1 - Lines[*pv]->WaitingTimeCDF(min(x + s - Lines[*pv]->expRTT, x)));
+		}
 		else
-            f *= Lines[*pv]->WaitingTimePDF(x);
+		{
+			f = 0;
+			
+			gsl_function F;
+			F.function = &TNM_TRC::IntFuncOfCWTPDFWrapper;
+			double f2, error;
+			TRCCallbackHolder holder;
+			holder.cls = this;
+			Params params;
+			params.indexI = lineIndex;
+			params.x = x;
+			for (vector<int>::iterator pv = LinesWithInfo.begin(); pv != LinesWithInfo.end(); pv++)
+			{
+				gsl_integration_workspace * w = gsl_integration_workspace_alloc (1000);
+				params.indexJ = *pv;
+				holder.params = &params;
+				F.params = &holder;
+				// the relative error is set to be 1e-4 to make sure the numerical integration converges
+				gsl_integration_qagiu(&F, max(x, x + s - Lines[*pv]->expRTT), 0, 1e-4, 1000, w, &f2, &error);
+				f += f2;
+				gsl_integration_workspace_free (w);
+			}
+			
+			f *= Lines[lineIndex]->WaitingTimePDF(x);
+		}
+	}
+	else  // InfoCase == CompInfo
+	{
+		double s = Lines[lineIndex]->expRTT;
+		for (vector<int>::iterator pv = AttractiveSet.begin(); pv!=AttractiveSet.end();pv++) 
+		{
+			if (*pv != lineIndex)
+				f *= (1 - Lines[*pv]->WaitingTimeCDF(x + s - Lines[*pv]->expRTT));
+			else
+				f *= Lines[*pv]->WaitingTimePDF(x);
+		}
+	}
+	return f;
+}
+
+double TNM_TRC::IntFuncOfCWTPDF(double y, void *params)
+{
+	Params *p = static_cast<Params*>(params);
+	int indexI = p->indexI;
+	int indexJ = p->indexJ;
+	double s = Lines[indexJ]->expRTT;
+	double x = p->x;
+    double f = 1;
+	for (vector<int>::iterator pv = LinesWithInfo.begin(); pv != LinesWithInfo.end(); pv++)
+	{
+		if (*pv != indexJ)
+			f *= (1 - Lines[*pv]->WaitingTimeCDF(y + s - Lines[*pv]->expRTT));
+		else
+			f *= Lines[indexJ]->WaitingTimePDF(y);
+	}
+	for (vector<int>::iterator pv = LinesWithoutInfo.begin(); pv != LinesWithoutInfo.end(); pv++)
+	{
+		if (*pv != indexI)
+			f *= (1 - Lines[*pv]->WaitingTimeCDF(min(y + s - Lines[*pv]->expRTT, x)));
 	}
 
 	return f;
@@ -266,19 +387,84 @@ double TNM_TRC::IntFuncOfEWT(double x, void *params)
 
 
 void TNM_TRC::UpdateProb()
-{
-	//vector<double> pVector;                     // a vector to store the probability of takin each line
-
-	// declare some variables for the numerical integration
-	
-    
-    if(SameDist && DefaultDist == LineProps::Expon)//in this case, no integration is needed. 
-    {	                  
-        double sumRate = this->GetTotalFreq();	
-        for (vector<int>::iterator pv = AttractiveSet.begin(); pv!=AttractiveSet.end();pv++) 
+{    
+    if (SameDist && DefaultDist == LineProps::Expon)
+	{
+		if (InfoCase == NoInfo)
 		{
-            LineProps *prop = Lines[*pv];
-            prop->prob = prop->par[0] / sumRate;
+			double sumRate = this->GetTotalFreq();	
+			for (vector<int>::iterator pv = AttractiveSet.begin(); pv!=AttractiveSet.end();pv++) 
+			{
+				LineProps *prop = Lines[*pv];
+				prop->prob = prop->par[0] / sumRate;
+			}
+		}
+		else // PartialInfo or CompInfo
+		{
+			multimap<double, LineProps*, less<double>> plines;
+			int n = AttractiveSet.size();
+
+			for (int i = 0; i < n; i++)
+			{
+				LineProps* l = Lines[AttractiveSet[i]];
+				plines.insert(pair<double, LineProps*>(l->expRTT, l));
+			}
+
+			double *sumLam = new double[n];
+			double **delta = new double*[n];
+			double **sumLamDel = new double*[n];
+			double sl = 0;
+			double *sld = new double[n];
+			for (int k = 0; k < n; k++)
+			{
+				delta[k] = new double[n];
+				sumLamDel[k] = new double[n];
+				sld[k] = 0;
+			}
+
+			int i = 0;
+			int j = 0;
+			for (multimap<double, LineProps*, less<double>>::iterator pi = plines.begin(); pi != plines.end(); pi++)
+			{
+				sl += pi->second->par[0];
+				sumLam[i] = sl;
+				j = 0;
+				for (multimap<double, LineProps*, less<double>>::iterator pj = plines.begin(); pj != plines.end(); pj++)
+				{
+					delta[i][j] = pi->second->expRTT - pj->second->expRTT;
+					if (j >= i || pj->second->info)
+					{
+						sld[i] += pj->second->par[0] * delta[i][j];
+						sumLamDel[i][j] = sld[i];
+					}
+					j++;
+				}
+				i++;
+			}
+
+			i = 0;
+			for (multimap<double, LineProps*, less<double>>::iterator pi = plines.begin(); pi != plines.end(); pi++)
+			{
+				if (pi->second->info)
+				{
+					double prob = 0;
+					for (j = i; j < n; j++)
+					{
+						if (j == (n - 1))
+							prob += pi->second->par[0] / sumLam[j] * exp(-sumLamDel[i][j]) * exp(-sumLam[j] * delta[j][i]);
+						else
+							prob += pi->second->par[0] / sumLam[j] * exp(-sumLamDel[i][j]) * (exp(-sumLam[j] * delta[j][i]) - exp(-sumLam[j] * delta[j+1][i]));
+					}
+					pi->second->prob = prob;
+				}
+				else
+				{
+					gsl_integration_workspace * w = gsl_integration_workspace_alloc (1000);
+					pi->second->UpdateProb(this, w, 1000);
+					gsl_integration_workspace_free (w);
+				}
+				i++;
+			}
 		}
     }
     else
@@ -289,11 +475,7 @@ void TNM_TRC::UpdateProb()
             Lines[*pv]->UpdateProb(this, w, 1000);
         }
        	gsl_integration_workspace_free (w);
-
     }
-
-	//Prob = pVector;
-	//return pVector;
 }
 
 double  TNM_TRC::GetTotalFreq(bool attractiveonly )
@@ -338,10 +520,34 @@ double TNM_TRC::GetMinHeadway(bool attractiveonly)
     }
     return minHeadway;
 }
+
+double TNM_TRC::GetMaxHeadway(bool attractiveonly)
+{
+    double maxHeadway = -1.0;
+    if(attractiveonly)
+    {        
+        for (vector<int>::iterator pv = AttractiveSet.begin(); pv!=AttractiveSet.end();pv++) 
+		{
+            LineProps *prop = Lines[*pv];
+            if(maxHeadway < prop->headwayMean)//ExponRate[i];
+            maxHeadway = prop->headwayMean;
+		}
+    }
+    else
+    {
+        for (vector<LineProps*>::iterator pv = Lines.begin(); pv!=Lines.end();pv++) 
+		{           
+            if(maxHeadway < (*pv)->headwayMean)//ExponRate[i];
+            maxHeadway = (*pv)->headwayMean;
+		}
+    }
+    return maxHeadway;
+}
+
 void TNM_TRC::UpdateExpectedWaitingTime()
 {
     
-    if(SameDist && DefaultDist == LineProps::Expon)//in this case, no integration is needed. 
+    if(SameDist && DefaultDist == LineProps::Expon && InfoCase == NoInfo)//in this case, no integration is needed. 
     {	  
        ExpWaitTime = 1/GetTotalFreq();       
     }
@@ -358,8 +564,16 @@ void TNM_TRC::UpdateExpectedWaitingTime()
         TRCCallbackHolder holder;
 	    holder.cls = this;
 	    F.params = &holder;
-        double minHeadway = GetMinHeadway();
-        gsl_integration_qag(&F, 0, minHeadway, 0, 1e-6, 1000, 6, w, &ExpWaitTime, &error);
+		if (InfoCase == NoInfo)
+		{
+			double minHeadway = GetMinHeadway();
+            gsl_integration_qag(&F, 0, minHeadway, 0, 1e-6, 1000, 6, w, &ExpWaitTime, &error);
+		}
+		else
+		{
+			double maxHeadway = GetMaxHeadway();
+			gsl_integration_qag(&F, 0, maxHeadway, 0, 1e-4, 1000, 6, w, &ExpWaitTime, &error);
+		}
         gsl_integration_workspace_free (w);
     }
     else //all other cases numerical integration from 0 to infinity for all other types of distribution
@@ -372,11 +586,9 @@ void TNM_TRC::UpdateExpectedWaitingTime()
         TRCCallbackHolder holder;
 	    holder.cls = this;
 	    F.params = &holder;
-        gsl_integration_qagiu(&F, 0, 0, 1e-6, 1000, w, &ExpWaitTime, &error);
+        gsl_integration_qagiu(&F, 0, 0, 1e-4, 1000, w, &ExpWaitTime, &error);
         gsl_integration_workspace_free (w);
     }
-
-	
 }
 
 double TNM_TRC::GetExpectedTravelTimeAfterBoarding()
@@ -386,7 +598,7 @@ double TNM_TRC::GetExpectedTravelTimeAfterBoarding()
     for (vector<int>::iterator pv = AttractiveSet.begin(); pv!=AttractiveSet.end();pv++) 	
     {
         LineProps *prop  = Lines[*pv];
-        expTTAB += prop->expRTT * prop->prob;//pVector[i];
+        expTTAB += prop->expRTT * prop->prob;
 	}
     return expTTAB;
 }
@@ -399,7 +611,7 @@ double TNM_TRC::GetExpectedTotalTravelTime()
 }
 
 
-//implementation of greedy method.
+//implementation of greedy method for NoInfo case only
 void TNM_TRC::UpdateGreedy(bool rankwithlttonly)
 {
     if(IsUpdated()) 
@@ -508,18 +720,53 @@ void TNM_TRC::UpdateEnum()
     }
     NeedUpdate = false;
 }
+
+// parameters are only used for the NoInfo case
+// for the two other cases (PartialInfo, CompInfo), all lines should be in AttractiveSet
+void TNM_TRC::UpdateAttractiveSet(bool rankwithlinetimeonly, bool enumeration)
+{
+	if(IsUpdated()) 
+    {
+        AttractiveSet.clear();
+        NeedUpdate = true;
+    }
+
+	switch(InfoCase)
+	{
+	case NoInfo:
+		if (enumeration)
+			UpdateEnum();
+		else
+			UpdateGreedy(rankwithlinetimeonly);
+		break;
+	case PartialInfo:
+		for (int i = 0; i < Lines.size(); i++)
+			AttractiveSet.push_back(i);
+		MinExpTotalTT = GetExpectedTotalTravelTime();
+		break;
+	case CompInfo:
+		for (int i = 0; i < Lines.size(); i++)
+			AttractiveSet.push_back(i);
+		MinExpTotalTT = GetExpectedTotalTravelTime();
+		break;
+	case Unknown:
+		cout << "No lines have been added, please add lines first!" << endl;
+		break;
+	}
+	NeedUpdate = false;
+}
 void TNM_TRC::Print(bool attractive)
 {
    
     if(attractive)
     {
-        cout<<"Size of attractive set: "<<setw(4)<<AttractiveSet.size()<<" Online informaiton "<<(Info?"Yes":"No")<<endl;
+        cout<<"Size of attractive set: "<<setw(4)<<AttractiveSet.size()<<" Online informaiton "<<GetInfoCaseStr()<<endl;
         if(IsUpdated())
         { 
             cout<<"Minimum expected total travel time = "<<setw(12)<<MinExpTotalTT
                 <<", of which expected waiting time = "<<setw(12)<<ExpWaitTime<<endl;
-        cout<<setw(12)<<"DistType"
-        <<setw(12)<<"MeanHeadway"<<setw(12)<<"VarHeadway"<<setw(12)<<"RunTime"
+        cout<<setw(14)<<"DistType"
+        <<setw(12)<<"MeanHeadway"<<setw(12)<<"VarHeadway"<<setw(12)<<"RunTime"<<setw(6)<<"Info"
         <<setw(12)<<"ChoiceProb"<<" Parameters"<<endl;
             for(int i = 0 ;i<AttractiveSet.size();i++)
             {
@@ -534,8 +781,8 @@ void TNM_TRC::Print(bool attractive)
     else
     {
          cout<<"Number of lines = "<<Lines.size()<<endl;
-         cout<<setw(12)<<"DistType"
-        <<setw(12)<<"MeanHeadway"<<setw(12)<<"VarHeadway"<<setw(12)<<"RunTime"
+         cout<<setw(14)<<"DistType"
+        <<setw(12)<<"MeanHeadway"<<setw(12)<<"VarHeadway"<<setw(12)<<"RunTime"<<setw(6)<<"Info"
         <<setw(12)<<"ChoiceProb"<<" Parameters"<<endl;
             for(int i = 0 ;i<Lines.size();i++)
             {

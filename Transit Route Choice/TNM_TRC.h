@@ -23,6 +23,12 @@ struct TRCCallbackHolder
 	void *params;
 };
 
+struct Params
+{
+	int indexI;
+    int indexJ;
+	double x;
+};
 
 //Base class for LineProps
 //class TNMDER_API LineProps
@@ -35,6 +41,7 @@ public:
         headwayMean = 1.0;
         headwayVar  = 0.0;
         expRTT      = 0.0;
+		info        = false;
         prob        = 0.0;
         id = 0;
         par.clear();
@@ -56,12 +63,14 @@ public:
 	double headwayMean;
 	double headwayVar;
 	double expRTT;                       // expected remaining travel time after boarding this line
+	bool info;                           // True/False with/without online information at stops
 	double prob;
     int    id; //this is the position of the line in the Lines object;
     void   Print();
     vector<double> par; //parameters for the distribution. For Erlang the first is rate, the second is scale
                         //for expon, the first is rate;
                         //for determinisitc, the first is rate;
+	bool IsInfoAvailable() { return info; }
     virtual void   InitializePar()
     {
       par.clear();  
@@ -121,18 +130,23 @@ public:
 class TNM_TRC
 {
 protected:
-	bool Info;                           // True/Flase: with/without online information at stops
-	vector<LineProps*> Lines;             // a vector to store line properties for each line
-    vector<int>  AttractiveSet; //Attractive set, save as ids in Lines.    
+	vector<LineProps*> Lines;              // a vector to store line properties for each line
+    vector<int>  AttractiveSet;            // Attractive set, save as ids in Lines.
+	vector<int> LinesWithInfo;             // lines with information at stops, save as ids in Lines
+	vector<int> LinesWithoutInfo;          // liens without inforamtion at stops, save as ids in Lines
 	double MinExpTotalTT;  //updated minimum expected total travel time;
     double ExpWaitTime;    //update expected waiting time;
     LineProps::Distribution  DefaultDist; //default distribution type for the class 
     bool      SameDist;
     bool      NeedUpdate;
+	enum Info {Unknown, NoInfo, PartialInfo, CompInfo};      // Unknown means no lines have been added
+	Info InfoCase; 
 protected:
 	double   ConditionalWaitingTimePDF(double x, void * params);
 	// integrand of expected waiting time
 	double   IntFuncOfEWT(double x, void * params);
+	double   IntFuncOfCWTPDF(double y, void * params);    // This integrand is especially for the PartialInfo case to do the two-dimensional 
+	                                                      // integration for the lines in the no-info set  
     double   GetExpectedTravelTimeAfterBoarding();
     void     UpdateExpectedWaitingTime(); //main internal operation, calculated expected waiting time.
     double   GetExpectedTotalTravelTime(); //main internal operation, call UpdateProb and UpdateExpectedWaitingTime to calculate the total 
@@ -143,20 +157,36 @@ public:
 	TNM_TRC();
 	virtual ~TNM_TRC(void);
     //initialize functions
-    bool Initialize(LineProps::Distribution dist = LineProps::Expon, bool info = false);
-    void AddLine(void *pointer, double mean, double var, double exRtt, LineProps::Distribution dist = LineProps::Unknown);
+	bool Initialize(LineProps::Distribution dist = LineProps::Expon);
+    void AddLine(void *pointer, double mean, double var, double exRtt, bool info = false, LineProps::Distribution dist = LineProps::Unknown);
 //////////////////////////////////////////////////////////////////////
     ///////////// properties//////////////////////////////////////////////
     bool     IsSameDist() {return SameDist;}
-    bool     IsInfoAvailable() {return Info;}
     LineProps::Distribution GetDefaultDist() {return DefaultDist;}
     double   GetExpectedWaitingTime() {return ExpWaitTime;}	
     double   GetTotalFreq(bool attracitveonly = true);
     double   GetMinHeadway(bool attractiveonly = true);
+	double   GetMaxHeadway(bool attractiveonly = true);
     double   GetMinExpTotalTravelTime()
 	{
 		return MinExpTotalTT;
 	}
+
+	string GetInfoCaseStr()
+	{
+		switch(InfoCase)
+		{
+		case NoInfo:
+			return "No";
+		case PartialInfo:
+			return "Partial";
+		case CompInfo:
+			return "Complete";
+		case Unknown:
+			return "No Lines";
+		}
+	}
+
 	bool GetAttractiveSet(vector<void*> &linePtrs)
 	{
         if(IsUpdated())
@@ -178,8 +208,11 @@ public:
     int      GetSizeOfAttractiveSet() {return AttractiveSet.size();}
 ///////////////////////////////////////////////////////////////////////////////////
     ///Main operations.
+	// UpdateGreedy and UpdateEnum are functions for NoInfo case
     void     UpdateGreedy(bool rankwithlinetimeonly = true); //default is the greedy method.         
     void     UpdateEnum(); //update based on enumeration method. caution, limmited to lines < 10;
+	// A control function to determine which update method to use according to the Info case and supplied parameters
+	void     UpdateAttractiveSet(bool rankwithlinetimeonly = true, bool enumeration = false);
     bool     IsUpdated() {return !NeedUpdate;}
     void     Print(bool attractiveonly = true); //io functions. 
 
@@ -195,6 +228,12 @@ public:
 	{
 		TRCCallbackHolder *h = static_cast<TRCCallbackHolder*>(holder);
 		return h->cls->IntFuncOfEWT(x, h->params);
+	}
+
+	static double IntFuncOfCWTPDFWrapper(double y, void * holder)
+	{
+		TRCCallbackHolder *h = static_cast<TRCCallbackHolder*>(holder);
+		return h->cls->IntFuncOfCWTPDF(y, h->params);
 	}
 };
 
